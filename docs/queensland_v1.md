@@ -63,19 +63,36 @@ The core architecture is a Rust host binary embedding a Lua scripting runtime. U
 
 ## 3. Architecture
 
-Queensland follows an embedded scripting architecture. The Rust host binary provides system-level capabilities (process management, git operations, concurrency control, filesystem access) and exposes them as a Lua standard library. The user writes a Lua template that defines the workflow and lives in the project directory.
+Queensland follows an embedded scripting architecture with a lightweight port/adapter pattern at key boundaries. The Rust host binary provides system-level capabilities (process management, git operations, concurrency control, filesystem access) and exposes them as a Lua standard library. The user writes a Lua template that defines the workflow and lives in the project directory.
+
+The core engine depends only on traits (ports) for VCS operations, process execution, and the scripting runtime. Concrete implementations (adapters) are wired up at startup in `main.rs`. This keeps the engine testable and the door open for alternative backends without introducing any abstraction overhead — v1 ships exactly one adapter per port.
 
 ### 3.1 Component Overview
 
 | Component | Language | Responsibility |
 |-----------|----------|----------------|
-| Host binary (`queensland`) | Rust | Process lifecycle, concurrency, git ops, state persistence, TUI, Lua runtime |
-| Lua runtime (embedded) | Lua 5.4 via mlua | Executes user templates, calls host functions |
+| Host binary (`queensland`) | Rust | Process lifecycle, concurrency, state persistence, TUI, wires adapters to engine |
+| Core engine | Rust | Orchestration loop, operates against trait boundaries only |
+| Git adapter | Rust | `impl VcsProvider` — git CLI wrapper (worktrees, merge, branches) |
+| Process adapter | Rust | `impl ProcessRunner` — spawns and supervises child processes |
+| Lua adapter | Rust (mlua) | `impl ScriptRuntime` — embeds Lua 5.4, binds `ql` API |
 | User template (`queensland.lua`) | Lua | Defines pipeline: ticket source, task steps, prompts, merge strategy |
 | Prompt templates (`prompts/`) | Markdown | Reusable prompt files with variable interpolation |
 | State file (`queensland.state.json`) | JSON | Tracks run status for resumability |
 
-### 3.2 Execution Model
+### 3.2 Port/Adapter Boundaries
+
+Three traits define the seams in the system. The engine and workers depend on these traits, never on concrete types.
+
+| Port (Trait) | v1 Adapter | What it abstracts |
+|--------------|------------|-------------------|
+| `VcsProvider` | `GitCli` | Worktree creation/removal, branching, merging, commit, push |
+| `ProcessRunner` | `OsProcess` | Spawning child processes, capturing output, enforcing timeouts |
+| `ScriptRuntime` | `LuaRuntime` | Loading and executing user templates, exposing host functions |
+
+Everything else (state persistence, prompt templating, TUI) stays concrete. These are internal concerns with no realistic alternative backends, and abstracting them would add noise without value.
+
+### 3.3 Execution Model
 
 When the user runs `queensland`, the following sequence occurs:
 
@@ -179,21 +196,25 @@ The expected return type is a list of ticket objects. Queensland requires only t
 
 ## 5. Host Binary Responsibilities
 
-The Rust host binary handles everything that is unsafe, complex, or performance-sensitive in a scripting language. It is the foundation that makes the Lua templates simple.
+The Rust host binary handles everything that is unsafe, complex, or performance-sensitive in a scripting language. It is the foundation that makes the Lua templates simple. Each subsystem is implemented as an adapter behind a trait boundary (see Section 3.2), keeping the core engine decoupled from concrete implementations.
 
 ### 5.1 Concurrency Manager
 
-The concurrency manager is a semaphore-gated thread pool. When `ql.parallel()` is called from Lua, the host spawns up to N worker threads (configurable via `ql.concurrency`, default 4). Each worker executes the user-provided Lua callback in its own Lua state, with access to the full `ql` API. The host manages worker lifecycle, captures panics and errors, and aggregates results.
+The concurrency manager is a semaphore-gated thread pool. When `ql.parallel()` is called from Lua, the host spawns up to N worker threads (configurable via `ql.concurrency`, default 4). Each worker executes the user-provided Lua callback in its own Lua state, with access to the full `ql` API. Workers receive trait objects (`&dyn VcsProvider`, `&dyn ProcessRunner`) rather than concrete types. The host manages worker lifecycle, captures panics and errors, and aggregates results.
 
-### 5.2 Process Supervisor
+### 5.2 Process Supervisor (`impl ProcessRunner`)
 
-Every external process (AI tools, shell commands) is spawned and managed by the host. The supervisor handles: spawning with the correct working directory and environment, capturing stdout/stderr in real time, enforcing timeouts with graceful shutdown (SIGTERM then SIGKILL), returning structured results to Lua, and logging all process activity for debugging.
+Every external process (AI tools, shell commands) is spawned and managed through the `ProcessRunner` trait. The v1 adapter (`OsProcess`) handles: spawning with the correct working directory and environment, capturing stdout/stderr in real time, enforcing timeouts with graceful shutdown (SIGTERM then SIGKILL), returning structured results to Lua, and logging all process activity for debugging.
 
-### 5.3 Git Manager
+### 5.3 Git Manager (`impl VcsProvider`)
 
-All git operations go through a centralized manager that ensures worktrees do not collide, branches are created from the correct base, and cleanup happens even on failure. The git manager maintains an internal registry of active worktrees and their associated branches.
+All VCS operations go through the `VcsProvider` trait. The v1 adapter (`GitCli`) wraps the git CLI and ensures worktrees do not collide, branches are created from the correct base, and cleanup happens even on failure. The git manager maintains an internal registry of active worktrees and their associated branches.
 
-### 5.4 TUI / Progress Display
+### 5.4 Script Runtime (`impl ScriptRuntime`)
+
+The scripting layer is behind the `ScriptRuntime` trait. The v1 adapter (`LuaRuntime`) embeds Lua 5.4 via mlua. It is responsible for loading user templates, binding the `ql` API functions to their host implementations, and managing per-worker Lua states during parallel execution.
+
+### 5.5 TUI / Progress Display
 
 During parallel execution, the host renders a terminal UI showing the status of each worker: which ticket it is processing, which step it is on, elapsed time, and whether it has succeeded, failed, or is still running. This is a simple status table, not a full TUI framework. After completion, a summary is printed showing results for each ticket.
 
@@ -418,12 +439,15 @@ The conflict resolution session provides: a summary of what both branches change
 queensland/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs              # CLI entry point (clap)
-│   ├── engine.rs            # Core orchestration loop
-│   ├── lua_runtime.rs       # Lua VM setup, API binding
+│   ├── main.rs              # CLI entry point (clap), wires adapters
+│   ├── engine.rs            # Core orchestration loop (depends on traits only)
+│   ├── ports.rs             # Trait definitions: VcsProvider, ProcessRunner, ScriptRuntime
+│   ├── adapters/
+│   │   ├── mod.rs
+│   │   ├── git_cli.rs       # impl VcsProvider for GitCli
+│   │   ├── os_process.rs    # impl ProcessRunner for OsProcess
+│   │   └── lua_runtime.rs   # impl ScriptRuntime for LuaRuntime, ql API binding
 │   ├── worker.rs            # Parallel worker implementation
-│   ├── git.rs               # Git operations (worktree, merge)
-│   ├── process.rs           # Process spawning and supervision
 │   ├── state.rs             # State persistence and resume logic
 │   ├── prompt.rs            # Prompt template loading and interpolation
 │   ├── tui.rs               # Terminal progress display
@@ -432,7 +456,8 @@ queensland/
 │   └── stdlib.lua           # Lua-side helpers (optional)
 └── tests/
     ├── integration/         # End-to-end tests with git repos
-    └── lua/                 # Lua template tests
+    ├── lua/                 # Lua template tests
+    └── mocks.rs             # Mock adapters for unit testing engine
 ```
 
 ### 11.2 User Project Layout
@@ -457,9 +482,40 @@ my-project/
 
 ## 12. Data Structures
 
-Key Rust types that form the backbone of the system:
+Key Rust types that form the backbone of the system.
 
-### 12.1 Core Types
+### 12.1 Port Traits
+
+```rust
+/// VCS operations — v1 adapter: GitCli
+trait VcsProvider: Send + Sync {
+    fn worktree_add(&self, branch: &str) -> Result<PathBuf>;
+    fn worktree_remove(&self, path: &Path) -> Result<()>;
+    fn commit(&self, cwd: &Path, message: &str) -> Result<()>;
+    fn push(&self, cwd: &Path, branch: &str) -> Result<()>;
+    fn merge(&self, branch: &str) -> Result<MergeResult>;
+    fn current_branch(&self) -> Result<String>;
+}
+
+/// Process spawning and supervision — v1 adapter: OsProcess
+trait ProcessRunner: Send + Sync {
+    fn run(&self, opts: ProcessOpts) -> Result<ProcessResult>;
+}
+
+/// Scripting runtime — v1 adapter: LuaRuntime
+trait ScriptRuntime {
+    fn load(&mut self, path: &Path) -> Result<()>;
+    fn call_parallel(
+        &self,
+        items: Vec<Ticket>,
+        concurrency: usize,
+        vcs: &dyn VcsProvider,
+        process: &dyn ProcessRunner,
+    ) -> Result<Vec<TicketResult>>;
+}
+```
+
+### 12.2 Core Types
 
 ```rust
 /// Result of running an external process
@@ -501,7 +557,7 @@ struct RunState {
 }
 ```
 
-### 12.2 Registered AI Tool
+### 12.3 Registered AI Tool
 
 ```rust
 /// Configuration for a registered AI tool
@@ -523,9 +579,11 @@ struct AiToolConfig {
 The minimum viable tool that can run a parallel AI pipeline end-to-end.
 
 - Rust binary with clap CLI
-- Embedded Lua 5.4 via mlua
+- Port traits defined: `VcsProvider`, `ProcessRunner`, `ScriptRuntime`
+- `GitCli` adapter implementing `VcsProvider` (worktree add/remove, commit)
+- `OsProcess` adapter implementing `ProcessRunner`
+- `LuaRuntime` adapter implementing `ScriptRuntime` (Lua 5.4 via mlua)
 - `ql.exec()`, `ql.log()`, `ql.env()`
-- `ql.git.worktree_add/remove`, `ql.git.commit`
 - `ql.ai.register()` and `ql.ai.run()` with process spawning
 - `ql.parallel()` with semaphore-based concurrency
 - Basic state file write/read
@@ -652,4 +710,4 @@ end)
 
 -- Merge phase
 ql.git.merge_all()
-```
+`````
