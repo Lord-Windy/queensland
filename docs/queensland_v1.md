@@ -29,11 +29,21 @@ Version 1.0 · March 2026 · Status: Draft
 
 ## 1. Overview
 
-Queensland is a parallel AI task orchestration engine. It coordinates the execution of multiple AI-assisted development tasks concurrently, managing the full lifecycle from ticket ingestion through implementation, review, and merge.
+Queensland is a parallel AI task orchestration engine. It coordinates the
+execution of multiple AI-assisted development tasks concurrently, managing
+the full lifecycle from ticket ingestion through implementation, review,
+and merge.
 
-The core architecture is a Rust host binary embedding a Lua scripting runtime. Users define their workflows as Lua templates that call into a host-provided standard library. This gives users full programmatic control over their pipeline without requiring them to build and maintain a compiled application.
+The core architecture is a Rust host binary embedding a Lua scripting
+runtime. Users define their workflows as Lua templates that call into
+a host-provided standard library. This gives users full programmatic
+control over their pipeline without requiring them to build and maintain
+a compiled application.
 
-**Core workflow:** Fetch a batch of tasks from any source, fan out to N parallel workers (each in its own git worktree), run AI tools and conventional tooling per-task, then sequentially merge results back to the main branch.
+**Core workflow:** Fetch a batch of tasks from any source, fan out to
+N parallel workers (each in its own git worktree), run AI tools and
+conventional tooling per-task, then sequentially merge results back to the
+main branch.
 
 ---
 
@@ -41,14 +51,20 @@ The core architecture is a Rust host binary embedding a Lua scripting runtime. U
 
 ### 2.1 Goals
 
-- Parallel execution of AI-assisted development tasks with configurable concurrency
-- Resumable and recoverable: surviving crashes, restarts, and partial failures gracefully
-- User-defined workflows via Lua templates with no DSL or config-language limitations
-- Pluggable ticket sources via callback functions (not hard-coded integrations)
-- Pluggable AI tool interface via callback functions with per-tool flag customization
+- Parallel execution of AI-assisted development tasks with configurable
+  concurrency
+- Resumable and recoverable: surviving crashes, restarts, and partial
+  failures gracefully
+- User-defined workflows via Lua templates with no DSL or config-language
+  limitations
+- Pluggable ticket sources via callback functions (not hard-coded
+  integrations)
+- Pluggable AI tool interface via callback functions with per-tool flag
+  customization
 - Prompt templating with global and local scopes
 - Sequential merge with interactive AI-assisted conflict resolution
-- Clean state tracking with the ability to inspect, resume, or clean up any run
+- Clean state tracking with the ability to inspect, resume, or clean up
+  any run
 
 ### 2.2 Non-Goals for v1
 
@@ -63,9 +79,18 @@ The core architecture is a Rust host binary embedding a Lua scripting runtime. U
 
 ## 3. Architecture
 
-Queensland follows an embedded scripting architecture with a lightweight port/adapter pattern at key boundaries. The Rust host binary provides system-level capabilities (process management, git operations, concurrency control, filesystem access) and exposes them as a Lua standard library. The user writes a Lua template that defines the workflow and lives in the project directory.
+Queensland follows an embedded scripting architecture with a lightweight
+port/adapter pattern at key boundaries. The Rust host binary provides
+system-level capabilities (process management, git operations, concurrency
+control, filesystem access) and exposes them as a Lua standard library.
+The user writes a Lua template that defines the workflow and lives in the
+project directory.
 
-The core engine depends only on traits (ports) for VCS operations, process execution, and the scripting runtime. Concrete implementations (adapters) are wired up at startup in `main.rs`. This keeps the engine testable and the door open for alternative backends without introducing any abstraction overhead — v1 ships exactly one adapter per port.
+The core engine depends only on traits (ports) for VCS operations, process
+execution, and the scripting runtime. Concrete implementations (adapters)
+are wired up at startup in `main.rs`. This keeps the engine testable and
+the door open for alternative backends without introducing any abstraction
+overhead — v1 ships exactly one adapter per port.
 
 ### 3.1 Component Overview
 
@@ -82,7 +107,8 @@ The core engine depends only on traits (ports) for VCS operations, process execu
 
 ### 3.2 Port/Adapter Boundaries
 
-Three traits define the seams in the system. The engine and workers depend on these traits, never on concrete types.
+Three traits define the seams in the system. The engine and workers depend
+on these traits, never on concrete types.
 
 | Port (Trait) | v1 Adapter | What it abstracts |
 |--------------|------------|-------------------|
@@ -90,25 +116,37 @@ Three traits define the seams in the system. The engine and workers depend on th
 | `ProcessRunner` | `OsProcess` | Spawning child processes, capturing output, enforcing timeouts |
 | `ScriptRuntime` | `LuaRuntime` | Loading and executing user templates, exposing host functions |
 
-Everything else (state persistence, prompt templating, TUI) stays concrete. These are internal concerns with no realistic alternative backends, and abstracting them would add noise without value.
+Everything else (state persistence, prompt templating, TUI) stays
+concrete. These are internal concerns with no realistic alternative
+backends, and abstracting them would add noise without value.
 
 ### 3.3 Execution Model
 
 When the user runs `queensland`, the following sequence occurs:
 
-1. The host binary starts and loads `queensland.lua` from the current directory.
-2. The Lua template calls host functions to fetch tickets, configure concurrency, and define the pipeline.
-3. `ql.parallel()` fans out tickets to a worker pool managed by Rust. Each worker gets its own OS thread and git worktree.
-4. Within each worker, Lua callbacks execute sequentially: AI tool invocations, shell commands, file operations.
-5. On completion (or failure), each worker reports status back. Failed tasks are paused with diagnostic notes left in the worktree.
-6. After all parallel work completes, the merge phase runs sequentially. If conflicts arise, an interactive AI-assisted resolution session begins.
+1. The host binary starts and loads `queensland.lua` from the current
+   directory.
+2. The Lua template calls host functions to fetch tickets, configure
+   concurrency, and define the pipeline.
+3. `ql.parallel()` fans out tickets to a worker pool managed by Rust. Each
+   worker gets its own OS thread and git worktree.
+4. Within each worker, Lua callbacks execute sequentially: AI tool
+   invocations, shell commands, file operations.
+5. On completion (or failure), each worker reports status back. Failed
+   tasks are paused with diagnostic notes left in the worktree.
+6. After all parallel work completes, the merge phase runs sequentially.
+   If conflicts arise, an interactive AI-assisted resolution session
+   begins.
 7. State is persisted to disk after every significant transition.
 
 ---
 
 ## 4. Lua Runtime and API Surface
 
-The Lua API is the primary interface users interact with. It is exposed as the `ql` module (required via `require("queensland")`). All host capabilities are accessed through this module. The API is designed to be small, composable, and unsurprising.
+The Lua API is the primary interface users interact with. It is exposed as
+the `ql` module (required via `require("queensland")`). All host
+capabilities are accessed through this module. The API is designed to be
+small, composable, and unsurprising.
 
 ### 4.1 Core API
 
@@ -121,6 +159,7 @@ The Lua API is the primary interface users interact with. It is exposed as the `
 | `ql.prompt(path, vars)` | Load a prompt template file and interpolate variables. |
 | `ql.sleep(seconds)` | Pause execution. |
 | `ql.env(name)` | Read environment variable. |
+| `ql.tmux_available()` | Returns `true` if tmux is installed. Useful for guarding interactive tool registration. |
 
 ### 4.2 Git Operations (`ql.git`)
 
@@ -136,23 +175,43 @@ The Lua API is the primary interface users interact with. It is exposed as the `
 
 ### 4.3 AI Tool Interface (`ql.ai`)
 
-The AI interface is deliberately thin. It spawns a process, feeds it a prompt, waits for it to finish, and returns the result. Tool-specific behavior is handled via user-defined callback functions.
+The AI interface is deliberately thin. It supports two execution modes
+determined by the `interactive` flag on each registered tool.
+**Non-interactive tools** (the default) are run in pipe mode: Queensland
+spawns the process, captures stdout/stderr, enforces timeouts, and
+returns a structured result. **Interactive tools** (`interactive = true`)
+are spawned inside a tmux session that the user can attach to. Queensland
+monitors the tmux session for exit and surfaces the tool's status in the
+TUI. tmux is a soft dependency — it is only required if any registered
+tool sets `interactive = true`.
 
 | Function | Description |
 |----------|-------------|
-| `ql.ai.register(name, config)` | Register an AI tool with its default flags, binary path, and argument pattern. |
-| `ql.ai.run(opts)` | Run a registered AI tool. `opts: {tool, cwd, prompt, args?, timeout?, on_output?}`. Returns `{success, output, exit_code, duration}`. |
+| `ql.ai.register(name, config)` | Register an AI tool with its binary path, default flags, argument pattern, and execution mode. |
+| `ql.ai.run(opts)` | Run a registered AI tool. `opts: {tool, cwd, prompt, args?, timeout?, on_output?}`. Returns `{success, output, exit_code, duration}`. For interactive tools, `output` is empty (output stays in the tmux session). |
 
-Example of registering tools with different default configurations:
+Example of registering tools with different configurations:
 
 ```lua
+-- Non-interactive tool: runs in pipe mode, output captured
 ql.ai.register("claude", {
     bin = "claude",
     default_args = { "--dangerously-skip-permissions" },
     prompt_flag = "--prompt",  -- or nil if prompt goes to stdin
     timeout = 600,
+    interactive = false,  -- default; explicit here for clarity
 })
 
+-- Interactive tool: runs in a tmux session the user can attach to
+ql.ai.register("aider", {
+    bin = "aider",
+    default_args = {},
+    prompt_flag = nil,
+    timeout = 1800,
+    interactive = true,  -- requires tmux
+})
+
+-- Non-interactive tool (default mode)
 ql.ai.register("opencode", {
     bin = "opencode",
     default_args = {},
@@ -163,7 +222,9 @@ ql.ai.register("opencode", {
 
 ### 4.4 Ticket Source Interface (`ql.tickets`)
 
-Queensland does not ship with built-in ticket source integrations. Instead, the user implements a fetch callback. This keeps the tool decoupled from the rapidly-changing landscape of project management tools.
+Queensland does not ship with built-in ticket source integrations.
+Instead, the user implements a fetch callback. This keeps the tool
+decoupled from the rapidly-changing landscape of project management tools.
 
 ```lua
 -- User implements this in their template
@@ -181,7 +242,10 @@ function fetch_tickets()
 end
 ```
 
-The expected return type is a list of ticket objects. Queensland requires only two fields: `key` (a unique identifier used for branch naming) and `summary` (a human-readable title). All other fields are passed through to prompt templates untouched.
+The expected return type is a list of ticket objects. Queensland requires
+only two fields: `key` (a unique identifier used for branch naming) and
+`summary` (a human-readable title). All other fields are passed through to
+prompt templates untouched.
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -196,37 +260,85 @@ The expected return type is a list of ticket objects. Queensland requires only t
 
 ## 5. Host Binary Responsibilities
 
-The Rust host binary handles everything that is unsafe, complex, or performance-sensitive in a scripting language. It is the foundation that makes the Lua templates simple. Each subsystem is implemented as an adapter behind a trait boundary (see Section 3.2), keeping the core engine decoupled from concrete implementations.
+The Rust host binary handles everything that is unsafe, complex, or
+performance-sensitive in a scripting language. It is the foundation that
+makes the Lua templates simple. Each subsystem is implemented as an
+adapter behind a trait boundary (see Section 3.2), keeping the core engine
+decoupled from concrete implementations.
 
 ### 5.1 Concurrency Manager
 
-The concurrency manager is a semaphore-gated thread pool. When `ql.parallel()` is called from Lua, the host spawns up to N worker threads (configurable via `ql.concurrency`, default 4). Each worker executes the user-provided Lua callback in its own Lua state, with access to the full `ql` API. Workers receive trait objects (`&dyn VcsProvider`, `&dyn ProcessRunner`) rather than concrete types. The host manages worker lifecycle, captures panics and errors, and aggregates results.
+The concurrency manager is a semaphore-gated thread pool. When
+`ql.parallel()` is called from Lua, the host spawns up to N worker threads
+(configurable via `ql.concurrency`, default 4). Each worker executes the
+user-provided Lua callback in its own Lua state, with access to the full
+`ql` API. Workers receive trait objects (`&dyn VcsProvider`, `&dyn
+ProcessRunner`) rather than concrete types. The host manages worker
+lifecycle, captures panics and errors, and aggregates results.
 
 ### 5.2 Process Supervisor (`impl ProcessRunner`)
 
-Every external process (AI tools, shell commands) is spawned and managed through the `ProcessRunner` trait. The v1 adapter (`OsProcess`) handles: spawning with the correct working directory and environment, capturing stdout/stderr in real time, enforcing timeouts with graceful shutdown (SIGTERM then SIGKILL), returning structured results to Lua, and logging all process activity for debugging.
+Every external process (AI tools, shell commands) is spawned and managed
+through the `ProcessRunner` trait. The v1 adapter (`OsProcess`) handles:
+spawning with the correct working directory and environment, capturing
+stdout/stderr in real time, enforcing timeouts with graceful shutdown
+(SIGTERM then SIGKILL), returning structured results to Lua, and logging
+all process activity for debugging.
+
+For AI tools registered with `interactive = true`, the process supervisor
+takes an alternate path: it creates a named tmux session (e.g.,
+`ql-PROJ-101-aider`) and spawns the tool inside it, wrapped in a shell
+command that writes the exit code to `.queensland/exit-codes/{ticket}-{tool}`
+on completion. The supervisor polls the tmux session for liveness rather
+than capturing output. When the tool finishes, the tmux session
+auto-closes (default tmux behavior), the supervisor reads the exit code
+from disk and reports completion. If the user is attached when the session
+ends, they are returned to their shell normally. Timeout enforcement still
+applies — an interactive tool that exceeds its timeout is killed via
+`tmux kill-session`.
 
 ### 5.3 Git Manager (`impl VcsProvider`)
 
-All VCS operations go through the `VcsProvider` trait. The v1 adapter (`GitCli`) wraps the git CLI and ensures worktrees do not collide, branches are created from the correct base, and cleanup happens even on failure. The git manager maintains an internal registry of active worktrees and their associated branches.
+All VCS operations go through the `VcsProvider` trait. The v1 adapter
+(`GitCli`) wraps the git CLI and ensures worktrees do not collide,
+branches are created from the correct base, and cleanup happens even on
+failure. The git manager maintains an internal registry of active
+worktrees and their associated branches.
 
 ### 5.4 Script Runtime (`impl ScriptRuntime`)
 
-The scripting layer is behind the `ScriptRuntime` trait. The v1 adapter (`LuaRuntime`) embeds Lua 5.4 via mlua. It is responsible for loading user templates, binding the `ql` API functions to their host implementations, and managing per-worker Lua states during parallel execution.
+The scripting layer is behind the `ScriptRuntime` trait. The v1 adapter
+(`LuaRuntime`) embeds Lua 5.4 via mlua. It is responsible for loading user
+templates, binding the `ql` API functions to their host implementations,
+and managing per-worker Lua states during parallel execution.
 
 ### 5.5 TUI / Progress Display
 
-During parallel execution, the host renders a terminal UI showing the status of each worker: which ticket it is processing, which step it is on, elapsed time, and whether it has succeeded, failed, or is still running. This is a simple status table, not a full TUI framework. After completion, a summary is printed showing results for each ticket.
+During parallel execution, the host renders a terminal UI showing the
+status of each worker: which ticket it is processing, which step it is on,
+elapsed time, and whether it has succeeded, failed, or is still running.
+This is a simple status table, not a full TUI framework. After completion,
+a summary is printed showing results for each ticket.
+
+Workers running interactive AI tools display a distinct status:
+**"waiting — attach: tmux attach -t ql-PROJ-101-aider"**. This tells the
+user which workers need human attention and how to connect. The TUI does
+not embed the interactive session — it only surfaces the session name and
+a "needs attention" indicator.
 
 ---
 
 ## 6. State Management and Resumability
 
-State management is critical. Queensland must survive laptop restarts, network failures, and partial crashes without leaving the repository in an unrecoverable state.
+State management is critical. Queensland must survive laptop restarts,
+network failures, and partial crashes without leaving the repository in an
+unrecoverable state.
 
 ### 6.1 State File
 
-Queensland writes a `queensland.state.json` file in the project root after every significant state transition. This file is the source of truth for resumability.
+Queensland writes a `queensland.state.json` file in the project root after
+every significant state transition. This file is the source of truth for
+resumability.
 
 ```json
 {
@@ -279,28 +391,39 @@ Queensland writes a `queensland.state.json` file in the project root after every
 
 ### 6.3 Resume Behavior
 
-When `queensland` is run and a `queensland.state.json` already exists, it enters resume mode. The resume logic is as follows:
+When `queensland` is run and a `queensland.state.json` already exists, it
+enters resume mode. The resume logic is as follows:
 
-- **Pending tickets** are picked up normally and processed from the beginning.
+- **Pending tickets** are picked up normally and processed from the
+  beginning.
 - **Completed tickets** are skipped (already in the merge queue).
-- **Failed tickets** are presented to the user with their error context. The user chooses to retry (re-run from the failed step), restart (re-run from scratch), or skip.
-- **In-progress tickets** (from a crash) are treated as failed. The worktree is inspected for partial work, and the diagnostic note includes what step was interrupted.
+- **Failed tickets** are presented to the user with their error context.
+  The user chooses to retry (re-run from the failed step), restart (re-run
+  from scratch), or skip.
+- **In-progress tickets** (from a crash) are treated as failed. The
+  worktree is inspected for partial work, and the diagnostic note includes
+  what step was interrupted.
 - **Merged tickets** are skipped entirely.
 
-A fresh run can be forced with `queensland --new`, which archives the old state file and starts clean.
+A fresh run can be forced with `queensland --new`, which archives the old
+state file and starts clean.
 
 ---
 
 ## 7. Prompt Templating
 
-Prompts are stored as Markdown files with simple variable interpolation using double-brace syntax. Queensland supports two scopes for prompt resolution.
+Prompts are stored as Markdown files with simple variable interpolation
+using double-brace syntax. Queensland supports two scopes for prompt
+resolution.
 
 ### 7.1 Resolution Order
 
 1. **Local:** `./prompts/` in the project directory (highest priority)
 2. **Global:** `~/.config/queensland/prompts/` (user-wide defaults)
 
-Local prompts override global prompts of the same name. This lets you set up personal defaults (coding style, review criteria) and override them per-project.
+Local prompts override global prompts of the same name. This lets you set
+up personal defaults (coding style, review criteria) and override them
+per-project.
 
 ### 7.2 Template Syntax
 
@@ -340,13 +463,23 @@ ql.ai.run({
 
 ## 8. Error Handling
 
-Error handling follows the principle of preserving maximum context while allowing non-broken work to continue. When a step fails within a parallel worker, the following sequence occurs:
+Error handling follows the principle of preserving maximum context while
+allowing non-broken work to continue. When a step fails within a parallel
+worker, the following sequence occurs:
 
-1. **Pause the failed worker.** The worker stops executing further steps for this ticket.
-2. **Write diagnostics.** A `QUEENSLAND_ERROR.md` file is written to the worktree root containing: the ticket key and summary, which step failed, the full error output (stdout and stderr), a timestamp, and the command that was run.
-3. **Update state.** The ticket status is set to `"failed"` in `queensland.state.json` with the error message.
-4. **Continue other workers.** All non-failed workers continue to completion. The failure of one ticket does not affect others.
-5. **Report at end.** After all workers finish, the summary shows which tickets succeeded and which failed, with pointers to the diagnostic files.
+1. **Pause the failed worker.** The worker stops executing further steps
+   for this ticket.
+2. **Write diagnostics.** A `QUEENSLAND_ERROR.md` file is written to the
+   worktree root containing: the ticket key and summary, which step
+   failed, the full error output (stdout and stderr), a timestamp, and the
+   command that was run.
+3. **Update state.** The ticket status is set to `"failed"` in
+   `queensland.state.json` with the error message.
+4. **Continue other workers.** All non-failed workers continue to
+   completion. The failure of one ticket does not affect others.
+5. **Report at end.** After all workers finish, the summary shows which
+   tickets succeeded and which failed, with pointers to the diagnostic
+   files.
 
 ### 8.1 QUEENSLAND_ERROR.md Format
 
@@ -372,7 +505,10 @@ error[E0433]: failed to resolve: use of undeclared crate
 
 ### 8.2 Lua-Level Error Handling
 
-Users can implement custom error handling in their Lua templates using standard `pcall`/`xpcall` patterns. The `ql.ai.run` function returns a result object rather than throwing, so users can branch on success/failure:
+Users can implement custom error handling in their Lua templates using
+standard `pcall`/`xpcall` patterns. The `ql.ai.run` function returns
+a result object rather than throwing, so users can branch on
+success/failure:
 
 ```lua
 local result = ql.ai.run({ tool = "opencode", cwd = dir, prompt = prompt })
@@ -392,18 +528,30 @@ end
 
 ## 9. Merge Strategy
 
-Merging is sequential and is the one phase where interactive AI assistance is offered. The merge process works as follows:
+Merging is sequential and is the one phase where interactive AI assistance
+is offered. The merge process works as follows:
 
-1. Completed tickets are added to the merge queue in the order they finished.
-2. Each branch is merged into the base branch one at a time using `git merge`.
-3. If the merge succeeds cleanly, the worktree is removed and the ticket is marked as merged.
-4. If the merge has conflicts, Queensland enters interactive conflict resolution mode.
+1. Completed tickets are added to the merge queue in the order they
+   finished.
+2. Each branch is merged into the base branch one at a time using `git
+   merge`.
+3. If the merge succeeds cleanly, the worktree is removed and the ticket
+   is marked as merged.
+4. If the merge has conflicts, Queensland enters interactive conflict
+   resolution mode.
 
 ### 9.1 Interactive Conflict Resolution
 
-When a merge conflict occurs, Queensland presents the conflict to the user alongside an AI assistant. The AI can analyze the conflict, suggest resolutions, and apply them, but the user has final approval. This is the only place in the pipeline where Queensland intentionally opens a dialogue rather than running autonomously.
+When a merge conflict occurs, Queensland presents the conflict to the user
+alongside an AI assistant. The AI can analyze the conflict, suggest
+resolutions, and apply them, but the user has final approval. This is the
+only place in the pipeline where Queensland intentionally opens a dialogue
+rather than running autonomously.
 
-The conflict resolution session provides: a summary of what both branches changed, the AI tool's suggested resolution, the ability to accept, modify, or manually resolve, and the option to skip the merge and leave the branch for manual handling later.
+The conflict resolution session provides: a summary of what both branches
+changed, the AI tool's suggested resolution, the ability to accept,
+modify, or manually resolve, and the option to skip the merge and leave
+the branch for manual handling later.
 
 ---
 
@@ -567,6 +715,7 @@ struct AiToolConfig {
     default_args: Vec<String>,
     prompt_flag: Option<String>,  // None = positional arg
     timeout: Duration,
+    interactive: bool,  // default: false. If true, tool runs in a tmux session.
 }
 ```
 
@@ -630,7 +779,7 @@ Improve the experience for daily use.
 | 3 | Should the merge phase support non-interactive mode? | For CI/CD use cases, a `--no-interactive` flag that fails on conflict instead of opening a session. |
 | 4 | Is Lua 5.4 sufficient or should we consider LuaJIT? | LuaJIT is faster but stuck on 5.1 semantics. For this use case, execution speed of Lua itself is irrelevant (all time is in subprocesses), so 5.4 features are probably more valuable. |
 | 5 | Should prompts support conditionals or loops? | Current design is simple variable interpolation. If templates need logic, users can build the prompt string in Lua directly. Keeping templates dumb may be a feature. |
-| 6 | What is the strategy for AI tool output capture during interactive use? | Some AI tools (Claude Code) are interactive. Should Queensland pipe through the terminal or capture silently? This may need to be per-tool configurable. |
+| 6 | ~~What is the strategy for AI tool output capture during interactive use?~~ **Resolved.** | Hybrid approach: non-interactive tools (default) use pipe mode with stdout/stderr capture. Tools registered with `interactive = true` are spawned in tmux sessions that the user can attach to. tmux is a soft dependency, only required when interactive tools are registered. See Sections 4.3 and 5.2. |
 
 ---
 
