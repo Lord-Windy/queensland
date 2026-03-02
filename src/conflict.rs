@@ -1,0 +1,1 @@
+//! Interactive merge conflict resolution.

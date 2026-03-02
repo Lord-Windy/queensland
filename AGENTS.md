@@ -1,7 +1,10 @@
 # Taskwarrior Workflow Context
 
-> **Shell Function**: `tw` auto-sets `project:` to current git repo name.
-> Use `tw` instead of `task` for all commands.
+> **`tw` is a wrapper**: `tw <args>` runs `task project:<git-repo-name> <args>`.
+> It reads the current git repo name and prepends `project:` automatically.
+> Example: in repo `queensland`, `tw ready` becomes `task project:queensland ready`.
+> **Always use `tw`** instead of `task` — it scopes all commands to the current project.
+> **Never add `project:` manually** when using `tw` — it's already included.
 
 # 🚨 SESSION CLOSE PROTOCOL 🚨
 
